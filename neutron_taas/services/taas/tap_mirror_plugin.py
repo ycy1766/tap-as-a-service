@@ -86,7 +86,7 @@ class TapMirrorPlugin(tap_mirror_db.Taas_mirror_db_mixin):
             if host is not None:
                 LOG.debug("Host on which the port is created = %s", host)
             else:
-                LOG.debug("Host could not be found, Port Binding disbaled!")
+                LOG.debug("Host could not be found, Port Binding disabled!")
                 # Fail here? Is it a valid usecase to create a mirror for a
                 # port that is not bound?
 
