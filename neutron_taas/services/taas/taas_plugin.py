@@ -93,7 +93,7 @@ class TaasPlugin(taas_db.Taas_db_Mixin):
         if host is not None:
             LOG.debug("Host on which the port is created = %s", host)
         else:
-            LOG.debug("Host could not be found, Port Binding disbaled!")
+            LOG.debug("Host could not be found, Port Binding disabled!")
 
         # Create tap service in the db model
         ts = super().create_tap_service(context, tap_service)
