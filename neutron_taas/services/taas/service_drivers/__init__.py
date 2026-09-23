@@ -24,6 +24,14 @@ class TaasBaseDriver(metaclass=abc.ABCMeta):
     def service_type(self):
         pass
 
+    def supports_tap_mirror_rules(self):
+        """Whether the backend can apply Tap Mirror rules.
+
+        The ``tap-mirror-rules`` extension is advertised only when the
+        loaded driver returns True.
+        """
+        return False
+
     @abc.abstractmethod
     def create_tap_service_precommit(self, context):
         pass
@@ -70,4 +78,18 @@ class TaasBaseDriver(metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     def delete_tap_mirror_postcommit(self, context):
+        pass
+
+    # Tap Mirror rules are optional for drivers: the default implementation
+    # is a no-op so that drivers without ``lport`` support keep working.
+    def create_tap_mirror_rule_precommit(self, context):
+        pass
+
+    def create_tap_mirror_rule_postcommit(self, context):
+        pass
+
+    def delete_tap_mirror_rule_precommit(self, context):
+        pass
+
+    def delete_tap_mirror_rule_postcommit(self, context):
         pass
