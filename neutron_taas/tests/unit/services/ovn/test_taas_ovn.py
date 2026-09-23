@@ -63,6 +63,14 @@ class TestTaasOvnDriver(base.BaseTestCase):
         self.multi_dir_t_mirror['directions'] = {'IN': 101,
                                                  'OUT': 102,
                                                  'BOTH': 103}
+        self.lport_t_mirror = {
+            'mirror_type': 'lport',
+            'directions': {'BOTH': None},
+            'id': uuidutils.generate_uuid(),
+            'remote_ip': None,
+            'remote_port_id': uuidutils.generate_uuid(),
+            'port_id': uuidutils.generate_uuid()
+        }
 
     def test_create_tap_mirror_postcommit(self):
         ctx = FakeMirrorContext(self.tap_mirror_dict)
@@ -146,3 +154,60 @@ class TestTaasOvnDriver(base.BaseTestCase):
         ]
 
         self.mock_add_request.assert_has_calls(expected_calls)
+
+    def _lport_names(self, t_m=None):
+        t_m = t_m or self.lport_t_mirror
+        return ('tm_in_%s' % t_m['id'][0:6], 'tm_out_%s' % t_m['id'][0:6])
+
+    def test_create_lport_tap_mirror_postcommit(self):
+        ctx = FakeMirrorContext(self.lport_t_mirror)
+        self.driver.create_tap_mirror_postcommit(ctx)
+        name_in, name_out = self._lport_names()
+        expected_in = {
+            'type': 'mirror_add',
+            'info': {
+                'name': name_in,
+                'direction_filter': 'to-lport',
+                'dest': self.lport_t_mirror['remote_port_id'],
+                'mirror_type': 'lport',
+                'index': 0,
+                'port_id': self.lport_t_mirror['port_id'],
+            }
+        }
+        expected_out = copy.deepcopy(expected_in)
+        expected_out['info'].update({'name': name_out,
+                                     'direction_filter': 'from-lport'})
+        # BOTH is expanded into one OVN mirror per direction.
+        self.mock_add_request.assert_has_calls(
+            [mock.call(expected_in), mock.call(expected_out)])
+        self.assertEqual(2, self.mock_add_request.call_count)
+
+    def test_create_lport_tap_mirror_postcommit_single_direction(self):
+        name_in, name_out = self._lport_names()
+        for directions, expected in (
+                ({'IN': None}, [(name_in, 'to-lport')]),
+                ({'OUT': None}, [(name_out, 'from-lport')]),
+                ({'IN': None, 'OUT': None}, [(name_in, 'to-lport'),
+                                             (name_out, 'from-lport')])):
+            self.mock_add_request.reset_mock()
+            t_m = dict(self.lport_t_mirror, directions=directions)
+            self.driver.create_tap_mirror_postcommit(FakeMirrorContext(t_m))
+            got = [(c[0][0]['info']['name'],
+                    c[0][0]['info']['direction_filter'])
+                   for c in self.mock_add_request.call_args_list]
+            self.assertEqual(expected, got)
+
+    def test_delete_lport_tap_mirror_precommit(self):
+        ctx = FakeMirrorContext(self.lport_t_mirror)
+        self.driver.delete_tap_mirror_precommit(ctx)
+        expected = []
+        for name in self._lport_names():
+            expected.append(mock.call({
+                'type': 'mirror_del',
+                'info': {
+                    'id': self.lport_t_mirror['id'],
+                    'name': name,
+                    'sink': self.lport_t_mirror['remote_port_id'],
+                    'port_id': self.lport_t_mirror['port_id']}}))
+        self.mock_add_request.assert_has_calls(expected)
+        self.assertEqual(2, self.mock_add_request.call_count)

@@ -1,3 +1,20 @@
+- job:
+    name: neutron-tempest-plugin-tap-as-a-service-ovn-lport
+    parent: neutron-tempest-plugin-tap-as-a-service-ovn
+    description: |
+      Test tap mirrors, including lport mirrors, with OVN 25.09 (the first
+      release with the lport mirror type) and the matching OVS 3.6. The
+      parent job keeps OVN 24.03 for the gre/erspan coverage.
+    voting: false
+    vars:
+      network_api_extensions_tempest:
+        - tap-mirror
+        - tap-mirror-both-direction
+        - tap-mirror-lport
+      devstack_localrc:
+        OVN_BRANCH: "branch-25.09"
+        OVS_BRANCH: "branch-3.6"
+
 - project:
     templates:
       - openstack-cover-jobs-neutron
@@ -9,6 +26,7 @@
       jobs:
         - neutron-tempest-plugin-tap-as-a-service
         - neutron-tempest-plugin-tap-as-a-service-ovn
+        - neutron-tempest-plugin-tap-as-a-service-ovn-lport
     gate:
       jobs:
         - neutron-tempest-plugin-tap-as-a-service

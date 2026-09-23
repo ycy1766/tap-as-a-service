@@ -22,6 +22,7 @@ from neutron_lib import rpc as n_rpc
 from neutron_lib.utils import net as n_utils
 from oslo_utils import uuidutils
 
+from neutron_taas.extensions import tap_mirror_lport as t_m_l_ext
 from neutron_taas.services.taas import tap_mirror_plugin
 
 
@@ -46,6 +47,8 @@ class TestTapMirrorPlugin(testlib_api.SqlTestCase):
         self._port_details = {
             'tenant_id': self._tenant_id,
             'binding:host_id': self._host_id,
+            'binding:vif_type': 'ovs',
+            'device_owner': 'compute:nova',
             'mac_address': n_utils.get_random_mac(
                 'fa:16:3e:00:00:00'.split(':')),
         }
@@ -57,7 +60,15 @@ class TestTapMirrorPlugin(testlib_api.SqlTestCase):
             'port_id': self._port_id,
             'directions': {"IN": 101},
             'remote_ip': '10.99.8.3',
+            'remote_port_id': None,
             'mirror_type': 'gre',
+        }
+        self._remote_port_id = uuidutils.generate_uuid()
+        self._lport_kwargs = {
+            'mirror_type': 'lport',
+            'remote_ip': None,
+            'remote_port_id': self._remote_port_id,
+            'directions': {'BOTH': None},
         }
 
     @contextlib.contextmanager
@@ -133,6 +144,59 @@ class TestTapMirrorPlugin(testlib_api.SqlTestCase):
                         self.tap_mirror(directions={"OUT": 101}):
                     pass
 
+    def test_create_tap_mirror_phases(self):
+        # The checks against stable state run first, in a transaction of
+        # their own; the checks against the existing Tap Mirrors run in
+        # the writer transaction that inserts the new one, which is the
+        # transaction the driver precommit hook sees.
+        calls = []
+
+        def _inputs(ctx, t_m):
+            calls.append(('inputs', ctx.session.get_transaction()))
+
+        def _conflicts(ctx, t_m):
+            calls.append(('conflicts', ctx.session.get_transaction()))
+
+        def _precommit(driver_context):
+            ctx = driver_context._plugin_context
+            calls.append(('precommit', ctx.session.get_transaction()))
+
+        self.driver.create_tap_mirror_precommit.side_effect = _precommit
+        with mock.patch.object(self._plugin, '_validate_mirror_inputs',
+                               side_effect=_inputs), \
+                mock.patch.object(self._plugin, '_check_mirror_conflicts',
+                                  side_effect=_conflicts), \
+                self.tap_mirror():
+            pass
+        self.assertEqual(['inputs', 'conflicts', 'precommit'],
+                         [c[0] for c in calls])
+        self.assertTrue(all(c[1] is not None for c in calls))
+        # The conflict checks and the insert share one transaction.
+        self.assertIs(calls[1][1], calls[2][1])
+        self.assertIsNot(calls[0][1], calls[1][1])
+
+    def test_create_tap_mirror_conflict_prevents_insert(self):
+        # A conflict found in the writer transaction aborts the insert, so
+        # neither the DB nor the driver sees the Tap Mirror.
+        with mock.patch.object(
+                self._plugin, '_check_mirror_conflicts',
+                side_effect=taas_exc.TapMirrorTunnelConflict(tunnel_id=101)):
+            with testtools.ExpectedException(
+                    taas_exc.TapMirrorTunnelConflict), \
+                    self.tap_mirror():
+                pass
+        self.assertEqual([], self.driver.mock_calls)
+        self.assertEqual([], self._plugin.get_tap_mirrors(self._context))
+
+    def test_create_tap_mirror_postcommit_failure(self):
+        # A backend failure in postcommit is logged, the Tap Mirror stays.
+        self.driver.create_tap_mirror_postcommit.side_effect = RuntimeError(
+            'backend down')
+        with mock.patch.object(tap_mirror_plugin.LOG, 'debug') as log_debug:
+            with self.tap_mirror() as tm:
+                self.assertEqual(self._port_id, tm['port_id'])
+        self.assertIn('backend down', str(log_debug.call_args))
+
     def test_delete_tap_mrror(self):
         with self.tap_mirror() as tm:
             self._plugin.delete_tap_mirror(self._context, tm['id'])
@@ -141,3 +205,142 @@ class TestTapMirrorPlugin(testlib_api.SqlTestCase):
     def test_delete_tap_mirror_non_existent(self):
         with testtools.ExpectedException(taas_exc.TapMirrorNotFound):
             self._plugin.delete_tap_mirror(self._context, 'non-existent')
+
+    # lport mirrors
+
+    def test_create_lport_tap_mirror(self):
+        with self.tap_mirror(**self._lport_kwargs) as tm:
+            self.assertEqual('lport', tm['mirror_type'])
+            self.assertEqual(self._remote_port_id, tm['remote_port_id'])
+            self.assertIsNone(tm['remote_ip'])
+
+    def test_create_lport_tap_mirror_without_remote_port(self):
+        kwargs = dict(self._lport_kwargs, remote_port_id=None)
+        with testtools.ExpectedException(
+                t_m_l_ext.TapMirrorRemotePortRequired), \
+                self.tap_mirror(**kwargs):
+            pass
+        self.assertEqual([], self.driver.mock_calls)
+
+    def test_create_lport_tap_mirror_same_port(self):
+        kwargs = dict(self._lport_kwargs, remote_port_id=self._port_id)
+        with testtools.ExpectedException(
+                t_m_l_ext.TapMirrorSameSourceAndRemotePort), \
+                self.tap_mirror(**kwargs):
+            pass
+
+    def test_create_lport_tap_mirror_with_remote_ip(self):
+        kwargs = dict(self._lport_kwargs, remote_ip='10.0.0.1')
+        with testtools.ExpectedException(
+                t_m_l_ext.TapMirrorRemoteIpNotAllowed), \
+                self.tap_mirror(**kwargs):
+            pass
+        self.assertEqual([], self.driver.mock_calls)
+
+    def test_create_lport_tap_mirror_with_tunnel_id(self):
+        kwargs = dict(self._lport_kwargs, directions={'IN': 99, 'OUT': None})
+        with testtools.ExpectedException(
+                t_m_l_ext.TapMirrorTunnelIdNotAllowed), \
+                self.tap_mirror(**kwargs):
+            pass
+        self.assertEqual([], self.driver.mock_calls)
+
+    def _create_lport_with_remote_port(self, context, remote_details):
+        def _details(ctx, port_id):
+            if port_id == self._remote_port_id:
+                return remote_details
+            return self._port_details
+
+        self._tap_mirror.update(self._lport_kwargs)
+        with mock.patch.object(self._plugin, 'get_port_details',
+                               side_effect=_details):
+            return self._plugin.create_tap_mirror(
+                context, {'tap_mirror': self._tap_mirror})
+
+    def test_create_lport_tap_mirror_remote_port_not_bound(self):
+        remote = dict(self._port_details)
+        remote['binding:host_id'] = None
+        self.assertRaises(t_m_l_ext.TapMirrorRemotePortNotBound,
+                          self._create_lport_with_remote_port,
+                          self._context, remote)
+
+    def test_create_lport_tap_mirror_remote_port_binding_failed(self):
+        # A host ID alone is not a binding.
+        remote = dict(self._port_details)
+        remote['binding:vif_type'] = 'binding_failed'
+        self.assertRaises(t_m_l_ext.TapMirrorRemotePortNotBound,
+                          self._create_lport_with_remote_port,
+                          self._context, remote)
+
+    def test_create_lport_tap_mirror_remote_port_network_owner(self):
+        # A router gateway port can be bound to a chassis, yet nothing
+        # behind it can receive the copies.
+        remote = dict(self._port_details,
+                      device_owner='network:router_gateway')
+        self.assertRaises(t_m_l_ext.TapMirrorRemotePortOwnerNotAllowed,
+                          self._create_lport_with_remote_port,
+                          self._context, remote)
+
+    def test_create_lport_tap_mirror_remote_port_other_project(self):
+        remote = dict(self._port_details, tenant_id='other-project')
+        user_ctx = context.Context('user', self._project_id)
+        self.assertRaises(taas_exc.PortDoesNotBelongToProject,
+                          self._create_lport_with_remote_port,
+                          user_ctx, remote)
+        # An admin may mirror into a port of another project.
+        tm = self._create_lport_with_remote_port(self._context, remote)
+        self.assertEqual(self._remote_port_id, tm['remote_port_id'])
+
+    def _create_lport(self, **kwargs):
+        t_m = dict(self._tap_mirror)
+        t_m.update(self._lport_kwargs)
+        t_m.update(kwargs)
+        t_m.pop('id', None)
+        with mock.patch.object(self._plugin, 'get_port_details',
+                               return_value=self._port_details):
+            return self._plugin.create_tap_mirror(self._context,
+                                                  {'tap_mirror': t_m})
+
+    def test_create_lport_tap_mirror_port_in_use(self):
+        # Only one lport mirror per source port and direction.
+        self._create_lport(directions={'IN': None})
+        self.assertRaises(t_m_l_ext.TapMirrorLportPortInUse,
+                          self._create_lport, directions={'IN': None})
+        self.assertRaises(t_m_l_ext.TapMirrorLportPortInUse,
+                          self._create_lport, directions={'BOTH': None})
+        # The other direction is still free.
+        tm_out = self._create_lport(directions={'OUT': None})
+        self.assertEqual({'OUT': None}, tm_out['directions'])
+        self.assertRaises(t_m_l_ext.TapMirrorLportPortInUse,
+                          self._create_lport, directions={'OUT': None})
+        # Another source port is not affected.
+        tm = self._create_lport(directions={'BOTH': None},
+                                port_id=uuidutils.generate_uuid())
+        self.assertEqual('lport', tm['mirror_type'])
+
+    def test_create_gre_tap_mirror_without_tunnel_id(self):
+        with testtools.ExpectedException(
+                t_m_l_ext.TapMirrorTunnelIdRequired), \
+                self.tap_mirror(directions={'IN': None}):
+            pass
+
+    def test_create_gre_tap_mirror_without_remote_ip(self):
+        with testtools.ExpectedException(
+                t_m_l_ext.TapMirrorRemoteIpRequired), \
+                self.tap_mirror(remote_ip=None):
+            pass
+
+    def test_create_gre_tap_mirror_with_remote_port(self):
+        with testtools.ExpectedException(
+                t_m_l_ext.TapMirrorRemotePortNotAllowed), \
+                self.tap_mirror(remote_port_id=self._remote_port_id):
+            pass
+
+    def test_delete_remote_port_deletes_lport_tap_mirror(self):
+        with self.tap_mirror(**self._lport_kwargs) as tm:
+            payload = mock.Mock(context=self._context,
+                                latest_state={'id': self._remote_port_id})
+            self._plugin.handle_delete_port(None, None, None, payload)
+            self.assertRaises(taas_exc.TapMirrorNotFound,
+                              self._plugin.get_tap_mirror,
+                              self._context, tm['id'])

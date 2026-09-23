@@ -34,8 +34,10 @@ class TapMirror(model_base.BASEV2, model_base.HasId,
                         nullable=False)
     directions = sa.Column(sa.String(255), nullable=False)
     remote_ip = sa.Column(sa.String(db_const.IP_ADDR_FIELD_SIZE),
-                          nullable=False)
-    mirror_type = sa.Column(sa.Enum('erspanv1', 'gre',
+                          nullable=True)
+    remote_port_id = sa.Column(sa.String(db_const.UUID_FIELD_SIZE),
+                               nullable=True)
+    mirror_type = sa.Column(sa.Enum('erspanv1', 'gre', 'lport',
                                     name='tapmirrors_type'),
                             nullable=False)
     api_collections = [mirror_extension.COLLECTION_NAME]
