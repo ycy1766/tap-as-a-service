@@ -40,6 +40,8 @@ class TaasOvnProviderHelper():
         self._taas_mirror_func_map = {
             'mirror_del': self.mirror_del,
             'mirror_add': self.mirror_add,
+            'mirror_rule_add': self.mirror_rule_add,
+            'mirror_rule_del': self.mirror_rule_del,
         }
         self._subscribe()
         self._helper_thread.start()
@@ -133,3 +135,19 @@ class TaasOvnProviderHelper():
             may_exist=True).execute(check_error=True)
 
         return mirror
+
+    @log_helpers.log_method_call
+    def mirror_rule_add(self, request):
+        mirror = self.ovn_nbdb_api.mirror_get(
+            request['name']).execute(check_error=True)
+        self.ovn_nbdb_api.mirror_rule_add(
+            mirror.uuid, request['priority'], request['match'],
+            request['action'], may_exist=True).execute(check_error=True)
+
+    @log_helpers.log_method_call
+    def mirror_rule_del(self, request):
+        mirror = self.ovn_nbdb_api.mirror_get(
+            request['name']).execute(check_error=True)
+        self.ovn_nbdb_api.mirror_rule_del(
+            mirror.uuid, priority=request['priority'],
+            match=request['match'], if_exists=True).execute(check_error=True)

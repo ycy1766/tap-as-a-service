@@ -13,10 +13,13 @@
 # under the License.
 
 import sqlalchemy as sa
+from sqlalchemy import orm
 
 from neutron_lib.api.definitions import tap_mirror as mirror_extension
 from neutron_lib.db import constants as db_const
 from neutron_lib.db import model_base
+
+from neutron_taas.extensions import tap_mirror_rules as rules_api_def
 
 
 class TapMirror(model_base.BASEV2, model_base.HasId,
@@ -43,3 +46,46 @@ class TapMirror(model_base.BASEV2, model_base.HasId,
     api_collections = [mirror_extension.COLLECTION_NAME]
     collection_resource_map = {
         mirror_extension.COLLECTION_NAME: mirror_extension.RESOURCE_NAME}
+
+
+class TapMirrorRule(model_base.BASEV2, model_base.HasId,
+                    model_base.HasProjectNoIndex):
+    """Represents a filtering rule of an ``lport`` Tap Mirror.
+
+    Rules are translated by the backend driver into OVN ``Mirror_Rule`` rows:
+    the ``priority`` and ``action`` map one to one, the remaining columns
+    describe the match of the rule.
+    """
+
+    __tablename__ = 'tap_mirror_rules'
+
+    tap_mirror_id = sa.Column(sa.String(db_const.UUID_FIELD_SIZE),
+                              sa.ForeignKey('tap_mirrors.id',
+                                            ondelete='CASCADE'),
+                              nullable=False)
+    priority = sa.Column(sa.Integer, nullable=False)
+    action = sa.Column(sa.Enum('mirror', 'skip',
+                               name='tapmirrorrules_action'),
+                       nullable=False)
+    # NULL: the rule applies to every direction mirrored by the parent.
+    direction = sa.Column(sa.Enum('IN', 'OUT',
+                                  name='tapmirrorrules_direction'),
+                          nullable=True)
+    ethertype = sa.Column(sa.Enum('IPv4', 'IPv6',
+                                  name='tapmirrorrules_ethertype'),
+                          nullable=False)
+    protocol = sa.Column(sa.String(16), nullable=True)
+    source_ip_prefix = sa.Column(sa.String(64), nullable=True)
+    destination_ip_prefix = sa.Column(sa.String(64), nullable=True)
+    source_port_range_min = sa.Column(sa.Integer, nullable=True)
+    source_port_range_max = sa.Column(sa.Integer, nullable=True)
+    destination_port_range_min = sa.Column(sa.Integer, nullable=True)
+    destination_port_range_max = sa.Column(sa.Integer, nullable=True)
+
+    tap_mirror = orm.relationship(
+        TapMirror,
+        backref=orm.backref('rules', cascade='all, delete-orphan',
+                            lazy='selectin'))
+    api_collections = [rules_api_def.RULE_COLLECTION_NAME]
+    collection_resource_map = {
+        rules_api_def.RULE_COLLECTION_NAME: rules_api_def.RULE_RESOURCE_NAME}
