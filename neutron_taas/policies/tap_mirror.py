@@ -16,6 +16,8 @@ from oslo_policy import policy
 
 COLLECTION_PATH = '/taas/tap_mirrors'
 RESOURCE_PATH = '/taas/tap_mirrors/{id}'
+RULE_COLLECTION_PATH = '/taas/tap_mirrors/{tap_mirror_id}/rules'
+RULE_RESOURCE_PATH = '/taas/tap_mirrors/{tap_mirror_id}/rules/{id}'
 
 rules = [
     policy.DocumentedRuleDefault(
@@ -67,6 +69,46 @@ rules = [
             {
                 'method': 'DELETE',
                 'path': RESOURCE_PATH,
+            }
+        ]
+    ),
+    policy.DocumentedRuleDefault(
+        name='create_tap_mirror_rule',
+        check_str=lib_rules.ADMIN_OR_PROJECT_MEMBER,
+        scope_types=['project'],
+        description='Create a Tap Mirror rule',
+        operations=[
+            {
+                'method': 'POST',
+                'path': RULE_COLLECTION_PATH
+            }
+        ],
+    ),
+    policy.DocumentedRuleDefault(
+        name='get_tap_mirror_rule',
+        check_str=lib_rules.ADMIN_OR_PROJECT_READER,
+        scope_types=['project'],
+        description='Show a Tap Mirror rule',
+        operations=[
+            {
+                'method': 'GET',
+                'path': RULE_COLLECTION_PATH
+            },
+            {
+                'method': 'GET',
+                'path': RULE_RESOURCE_PATH
+            },
+        ]
+    ),
+    policy.DocumentedRuleDefault(
+        name='delete_tap_mirror_rule',
+        check_str=lib_rules.ADMIN_OR_PROJECT_MEMBER,
+        scope_types=['project'],
+        description='Delete a Tap Mirror rule',
+        operations=[
+            {
+                'method': 'DELETE',
+                'path': RULE_RESOURCE_PATH,
             }
         ]
     ),

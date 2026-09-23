@@ -133,7 +133,23 @@ receiving instance sees the original frames exactly as a SPAN port would.
 
  $ openstack tap mirror create --port mirror_port --name mirror1 --directions BOTH --remote-port monitor_port --mirror-type lport
 
-3. Observe the traffic on the monitoring VM:
+3. Optionally restrict the mirrored traffic with rules. Rules are evaluated by
+   decreasing priority (1-32767) and a packet matching no rule is mirrored,
+   so without rules everything is mirrored. To mirror only selected traffic,
+   end the list with a low priority catch-all ``skip`` rule. A rule applies
+   to both mirrored directions unless ``--direction IN`` or ``OUT`` is given.
+
+.. code-block:: console
+
+ $ openstack tap mirror rule create mirror1 --priority 100 --action mirror --protocol tcp --dst-port 443
+ $ openstack tap mirror rule create mirror1 --priority 50 --action mirror --direction IN --protocol icmp
+ $ openstack tap mirror rule create mirror1 --priority 1 --action skip
+
+   Frames sent by the mirrored port are copied before its security group
+   rules are applied, frames delivered to it are copied after them. The
+   copies reach the monitoring port whatever its own security groups are.
+
+4. Observe the traffic on the monitoring VM:
 
 .. code-block:: console
 

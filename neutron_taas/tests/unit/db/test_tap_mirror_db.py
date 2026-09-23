@@ -51,6 +51,17 @@ class TapMirrorDbTestCase(testlib_api.SqlTestCase):
                                }
                 }
 
+    def _get_rule_data(self, priority=100, action='mirror', **kwargs):
+        rule = {'project_id': self.project_id,
+                'priority': priority, 'action': action, 'direction': None,
+                'ethertype': 'IPv4', 'protocol': 'tcp',
+                'source_ip_prefix': None, 'destination_ip_prefix': None,
+                'source_port_range_min': None, 'source_port_range_max': None,
+                'destination_port_range_min': 443,
+                'destination_port_range_max': 443}
+        rule.update(kwargs)
+        return {'rule': rule}
+
     def _get_tap_mirror(self, tap_mirror_id):
         """Helper method to retrieve tap Mirror."""
         with self.ctx.session.begin():
@@ -131,3 +142,72 @@ class TapMirrorDbTestCase(testlib_api.SqlTestCase):
         self.assertEqual({'BOTH': None}, result['directions'])
         listed = self._get_tap_mirrors()
         self.assertEqual(remote_port_id, listed[0]['remote_port_id'])
+
+    def _create_lport_mirror(self):
+        data = self._get_tap_mirror_data(mirror_type='lport', remote_ip=None,
+                                         remote_port_id=_uuid())
+        return self._create_tap_mirror(data)
+
+    def test_tap_mirror_rule_crud(self):
+        tm = self._create_lport_mirror()
+        with self.ctx.session.begin():
+            rule = self.db_mixin.create_tap_mirror_rule(
+                self.ctx, tm['id'], self._get_rule_data())
+        self.assertEqual(tm['id'], rule['tap_mirror_id'])
+        self.assertEqual(100, rule['priority'])
+        self.assertEqual('mirror', rule['action'])
+        self.assertIsNone(rule['direction'])
+        self.assertEqual(443, rule['destination_port_range_min'])
+
+        with self.ctx.session.begin():
+            got = self.db_mixin.get_tap_mirror_rule(self.ctx, rule['id'],
+                                                    tm['id'])
+        self.assertEqual(rule, got)
+
+        with self.ctx.session.begin():
+            skip_all = self._get_rule_data(
+                priority=1, action='skip', direction='IN', protocol=None,
+                destination_port_range_min=None,
+                destination_port_range_max=None)
+            skip = self.db_mixin.create_tap_mirror_rule(self.ctx, tm['id'],
+                                                        skip_all)
+            rules = self.db_mixin.get_tap_mirror_rules(self.ctx, tm['id'])
+        self.assertEqual('IN', skip['direction'])
+        self.assertEqual({1, 100}, {r['priority'] for r in rules})
+
+        with self.ctx.session.begin():
+            self.db_mixin.delete_tap_mirror_rule(self.ctx, rule['id'],
+                                                 tm['id'])
+        with self.ctx.session.begin():
+            self.assertRaises(taas_exc.TapMirrorRuleNotFound,
+                              self.db_mixin.get_tap_mirror_rule,
+                              self.ctx, rule['id'], tm['id'])
+
+    def test_tap_mirror_rule_scoped_to_parent(self):
+        tm1 = self._create_lport_mirror()
+        tm2 = self._create_lport_mirror()
+        with self.ctx.session.begin():
+            rule = self.db_mixin.create_tap_mirror_rule(
+                self.ctx, tm1['id'], self._get_rule_data())
+            self.assertRaises(taas_exc.TapMirrorRuleNotFound,
+                              self.db_mixin.get_tap_mirror_rule,
+                              self.ctx, rule['id'], tm2['id'])
+            self.assertEqual(
+                [], self.db_mixin.get_tap_mirror_rules(self.ctx, tm2['id']))
+
+    def test_tap_mirror_rule_parent_not_found(self):
+        with self.ctx.session.begin():
+            self.assertRaises(taas_exc.TapMirrorNotFound,
+                              self.db_mixin.create_tap_mirror_rule,
+                              self.ctx, _uuid(), self._get_rule_data())
+
+    def test_tap_mirror_delete_cascades_rules(self):
+        tm = self._create_lport_mirror()
+        with self.ctx.session.begin():
+            rule = self.db_mixin.create_tap_mirror_rule(
+                self.ctx, tm['id'], self._get_rule_data())
+        self._delete_tap_mirror(tm['id'])
+        with self.ctx.session.begin():
+            self.assertRaises(taas_exc.TapMirrorRuleNotFound,
+                              self.db_mixin.get_tap_mirror_rule,
+                              self.ctx, rule['id'], tm['id'])

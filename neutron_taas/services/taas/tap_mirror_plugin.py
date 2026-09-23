@@ -16,6 +16,7 @@ from neutron.services import service_base
 from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import tap_mirror as t_m_api_def
 from neutron_lib.api.definitions import tap_mirror_lport as t_m_l_api_def
+from neutron_lib.api.definitions import tap_mirror_rules as t_m_r_api_def
 from neutron_lib.callbacks import events
 from neutron_lib.callbacks import registry
 from neutron_lib.callbacks import resources
@@ -32,6 +33,7 @@ from neutron_taas.db import tap_mirror_db
 from neutron_taas.extensions import tap_mirror_both_direction as t_m_b_api_def
 from neutron_taas.services.taas.service_drivers import (service_driver_context
                                                         as sd_context)
+from neutron_taas.services.taas.service_drivers.ovn import match
 
 LOG = logging.getLogger(__name__)
 
@@ -42,6 +44,7 @@ class TapMirrorPlugin(tap_mirror_db.Taas_mirror_db_mixin):
     supported_extension_aliases = [t_m_api_def.ALIAS,
                                    t_m_b_api_def.ALIAS,
                                    t_m_l_api_def.ALIAS,
+                                   t_m_r_api_def.ALIAS,
                                    ]
 
     path_prefix = "/taas"
@@ -200,6 +203,63 @@ class TapMirrorPlugin(tap_mirror_db.Taas_mirror_db_mixin):
                 with excutils.save_and_reraise_exception():
                     LOG.error("Failed to delete Tap Mirror on driver. "
                               "tap_mirror: %s", id)
+
+    # ``rules`` sub-resource of ``tap_mirrors`` (lport mirrors only)
+
+    def _get_lport_tap_mirror(self, context, tap_mirror_id):
+        tm = self.get_tap_mirror(context, tap_mirror_id)
+        if tm['mirror_type'] != t_m_l_api_def.MIRROR_TYPE_LPORT:
+            raise taas_exc.TapMirrorRulesNotSupported(
+                mirror_id=tap_mirror_id, mirror_type=tm['mirror_type'])
+        return tm
+
+    @log_helpers.log_method_call
+    def create_tap_mirror_rule(self, context, tap_mirror_id, rule):
+        r = rule['rule']
+        with db_api.CONTEXT_WRITER.using(context):
+            tm = self._get_lport_tap_mirror(context, tap_mirror_id)
+            direction = r.get('direction')
+            if (direction and direction not in
+                    taas_utils.expand_directions(tm['directions'])):
+                raise taas_exc.TapMirrorRuleDirectionNotMirrored(
+                    mirror_id=tap_mirror_id, direction=direction)
+            # Validates the rule and yields the backend match expression.
+            ovn_match = match.rule_to_ovn_match(r)
+            for existing in self.get_tap_mirror_rules(context, tap_mirror_id):
+                if (existing['priority'] == r['priority'] and
+                        existing.get('direction') == direction and
+                        match.rule_to_ovn_match(existing) == ovn_match):
+                    raise taas_exc.TapMirrorRuleConflict(
+                        mirror_id=tap_mirror_id, priority=r['priority'])
+            new_rule = super().create_tap_mirror_rule(
+                context, tap_mirror_id, rule)
+            driver_context = sd_context.TapMirrorRuleContext(
+                self, context, tm, new_rule)
+            self.driver.create_tap_mirror_rule_precommit(driver_context)
+            try:
+                self.driver.create_tap_mirror_rule_postcommit(driver_context)
+            except Exception:
+                with excutils.save_and_reraise_exception():
+                    LOG.error("Failed to create Tap Mirror rule on driver. "
+                              "tap_mirror: %s rule: %s", tap_mirror_id,
+                              new_rule['id'])
+        return new_rule
+
+    @log_helpers.log_method_call
+    def delete_tap_mirror_rule(self, context, id, tap_mirror_id):
+        with db_api.CONTEXT_WRITER.using(context):
+            tm = self.get_tap_mirror(context, tap_mirror_id)
+            rule = self.get_tap_mirror_rule(context, id, tap_mirror_id)
+            driver_context = sd_context.TapMirrorRuleContext(
+                self, context, tm, rule)
+            self.driver.delete_tap_mirror_rule_precommit(driver_context)
+            super().delete_tap_mirror_rule(context, id, tap_mirror_id)
+            try:
+                self.driver.delete_tap_mirror_rule_postcommit(driver_context)
+            except Exception:
+                with excutils.save_and_reraise_exception():
+                    LOG.error("Failed to delete Tap Mirror rule on driver. "
+                              "tap_mirror: %s rule: %s", tap_mirror_id, id)
 
     @registry.receives(resources.PORT, [events.PRECOMMIT_DELETE])
     @log_helpers.log_method_call

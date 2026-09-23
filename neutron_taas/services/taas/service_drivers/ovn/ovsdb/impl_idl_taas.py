@@ -121,14 +121,19 @@ class OvsdbNbOvnIdl(nb_impl_idl.OvnNbApiIdlImpl, Backend):
 class OvnNbIdlForTaas(connection.OvsdbIdl):
 
     SCHEMA = "OVN_Northbound"
-    TABLES = ('Logical_Switch_Port', 'Mirror')
+    TABLES = ('Logical_Switch_Port', 'Mirror', 'Mirror_Rule')
 
     def __init__(self):
         ovn_conf.register_opts()
         self.conn_string = ovn_conf.get_ovn_nb_connection()
         helper = self._get_ovsdb_helper(self.conn_string)
         for table in OvnNbIdlForTaas.TABLES:
-            helper.register_table(table)
+            if table in helper.schema_json['tables']:
+                helper.register_table(table)
+            else:
+                LOG.info('OVN Northbound table %s is not available in the '
+                         'connected schema; related features are disabled',
+                         table)
         super().__init__(self.conn_string, helper)
         atexit.register(self.stop)
 

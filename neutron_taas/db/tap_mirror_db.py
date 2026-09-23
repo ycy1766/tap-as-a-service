@@ -15,6 +15,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import exc
 
 from neutron_lib.api.definitions import tap_mirror as mirror_extension
+from neutron_lib.api.definitions import tap_mirror_rules as rules_api_def
 from neutron_lib.db import api as db_api
 from neutron_lib.db import constants as db_const
 from neutron_lib.db import model_base
@@ -26,6 +27,7 @@ from oslo_log import helpers as log_helpers
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
 from oslo_utils import uuidutils
+from sqlalchemy import orm
 
 from neutron_taas.extensions import tap_mirror as tap_m_extension
 
@@ -58,6 +60,49 @@ class TapMirror(model_base.BASEV2, model_base.HasId,
         mirror_extension.COLLECTION_NAME: mirror_extension.RESOURCE_NAME}
 
 
+class TapMirrorRule(model_base.BASEV2, model_base.HasId,
+                    model_base.HasProjectNoIndex):
+    """Represents a filtering rule of an ``lport`` Tap Mirror.
+
+    Rules are translated by the backend driver into OVN ``Mirror_Rule`` rows:
+    the ``priority`` and ``action`` map one to one, the remaining columns
+    describe the match of the rule.
+    """
+
+    __tablename__ = 'tap_mirror_rules'
+
+    tap_mirror_id = sa.Column(sa.String(db_const.UUID_FIELD_SIZE),
+                              sa.ForeignKey('tap_mirrors.id',
+                                            ondelete='CASCADE'),
+                              nullable=False)
+    priority = sa.Column(sa.Integer, nullable=False)
+    action = sa.Column(sa.Enum('mirror', 'skip',
+                               name='tapmirrorrules_action'),
+                       nullable=False)
+    # NULL: the rule applies to every direction mirrored by the parent.
+    direction = sa.Column(sa.Enum('IN', 'OUT',
+                                  name='tapmirrorrules_direction'),
+                          nullable=True)
+    ethertype = sa.Column(sa.Enum('IPv4', 'IPv6',
+                                  name='tapmirrorrules_ethertype'),
+                          nullable=False)
+    protocol = sa.Column(sa.String(16), nullable=True)
+    source_ip_prefix = sa.Column(sa.String(64), nullable=True)
+    destination_ip_prefix = sa.Column(sa.String(64), nullable=True)
+    source_port_range_min = sa.Column(sa.Integer, nullable=True)
+    source_port_range_max = sa.Column(sa.Integer, nullable=True)
+    destination_port_range_min = sa.Column(sa.Integer, nullable=True)
+    destination_port_range_max = sa.Column(sa.Integer, nullable=True)
+
+    tap_mirror = orm.relationship(
+        TapMirror,
+        backref=orm.backref('rules', cascade='all, delete-orphan',
+                            lazy='selectin'))
+    api_collections = [rules_api_def.RULE_COLLECTION_NAME]
+    collection_resource_map = {
+        rules_api_def.RULE_COLLECTION_NAME: rules_api_def.RULE_RESOURCE_NAME}
+
+
 class Taas_mirror_db_mixin(tap_m_extension.TapMirrorBase):
 
     def _make_tap_mirror_dict(self, tap_mirror, fields=None):
@@ -72,6 +117,22 @@ class Taas_mirror_db_mixin(tap_m_extension.TapMirrorBase):
             'remote_port_id': tap_mirror.get('remote_port_id'),
             'mirror_type': tap_mirror.get('mirror_type'),
         }
+        return db_utils.resource_fields(res, fields)
+
+    RULE_FIELDS = ('priority', 'action', 'direction', 'ethertype', 'protocol',
+                   'source_ip_prefix', 'destination_ip_prefix',
+                   'source_port_range_min', 'source_port_range_max',
+                   'destination_port_range_min',
+                   'destination_port_range_max')
+
+    def _make_tap_mirror_rule_dict(self, rule, fields=None):
+        res = {
+            'id': rule.get('id'),
+            'project_id': rule.get('project_id'),
+            'tap_mirror_id': rule.get('tap_mirror_id'),
+        }
+        for field in self.RULE_FIELDS:
+            res[field] = rule.get(field)
         return db_utils.resource_fields(res, fields)
 
     @db_api.retry_if_session_inactive()
@@ -141,3 +202,56 @@ class Taas_mirror_db_mixin(tap_m_extension.TapMirrorBase):
             tap_mirror_db = self._get_tap_mirror(context, id)
             tap_mirror_db.update(t_m)
             return self._make_tap_mirror_dict(tap_mirror_db)
+
+    # Tap Mirror rules (``rules`` sub-resource of ``tap_mirrors``)
+
+    def _get_tap_mirror_rule(self, context, rule_id, tap_mirror_id=None):
+        with db_api.CONTEXT_READER.using(context):
+            query = model_query.query_with_hooks(context, TapMirrorRule)
+            query = query.filter(TapMirrorRule.id == rule_id)
+            if tap_mirror_id:
+                query = query.filter(
+                    TapMirrorRule.tap_mirror_id == tap_mirror_id)
+            try:
+                return query.one()
+            except exc.NoResultFound:
+                raise taas_exc.TapMirrorRuleNotFound(rule_id=rule_id)
+
+    @db_api.retry_if_session_inactive()
+    @log_helpers.log_method_call
+    def create_tap_mirror_rule(self, context, tap_mirror_id, rule):
+        fields = rule['rule']
+        with db_api.CONTEXT_WRITER.using(context):
+            # Raises TapMirrorNotFound when the parent does not exist.
+            self._get_tap_mirror(context, tap_mirror_id)
+            rule_db = TapMirrorRule(
+                id=uuidutils.generate_uuid(),
+                project_id=fields.get('project_id'),
+                tap_mirror_id=tap_mirror_id,
+                **{f: fields.get(f) for f in self.RULE_FIELDS})
+            context.session.add(rule_db)
+            return self._make_tap_mirror_rule_dict(rule_db)
+
+    @log_helpers.log_method_call
+    def get_tap_mirror_rule(self, context, id, tap_mirror_id, fields=None):
+        with db_api.CONTEXT_READER.using(context):
+            rule = self._get_tap_mirror_rule(context, id, tap_mirror_id)
+            return self._make_tap_mirror_rule_dict(rule, fields)
+
+    @db_api.retry_if_session_inactive()
+    @log_helpers.log_method_call
+    def get_tap_mirror_rules(self, context, tap_mirror_id, filters=None,
+                             fields=None, sorts=None, limit=None,
+                             marker=None, page_reverse=False):
+        filters = dict(filters or {})
+        filters['tap_mirror_id'] = [tap_mirror_id]
+        with db_api.CONTEXT_READER.using(context):
+            return model_query.get_collection(
+                context, TapMirrorRule, self._make_tap_mirror_rule_dict,
+                filters=filters, fields=fields)
+
+    @log_helpers.log_method_call
+    def delete_tap_mirror_rule(self, context, id, tap_mirror_id):
+        with db_api.CONTEXT_WRITER.using(context):
+            rule = self._get_tap_mirror_rule(context, id, tap_mirror_id)
+            context.session.delete(rule)

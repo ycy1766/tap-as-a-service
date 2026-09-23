@@ -13,12 +13,14 @@
 from neutron_lib.api.definitions import taas as taas_api_def
 from neutron_lib.api.definitions import tap_mirror as tap_m_api_def
 from neutron_lib.api.definitions import tap_mirror_lport as tap_m_l_api_def
+from neutron_lib.api.definitions import tap_mirror_rules as tap_m_r_api_def
 from oslo_log import helpers as log_helpers
 from oslo_log import log as logging
 
 from neutron_taas.common import utils as taas_utils
 from neutron_taas.services.taas import service_drivers
 from neutron_taas.services.taas.service_drivers.ovn import helper
+from neutron_taas.services.taas.service_drivers.ovn import match
 
 
 LOG = logging.getLogger(__name__)
@@ -29,7 +31,8 @@ class TaasOvnDriver(service_drivers.TaasBaseDriver):
 
     driver_name = "TaaS OVN Driver"
     more_supported_extension_aliases = [tap_m_api_def.ALIAS,
-                                        tap_m_l_api_def.ALIAS]
+                                        tap_m_l_api_def.ALIAS,
+                                        tap_m_r_api_def.ALIAS]
 
     def __init__(self, service_plugin):
         LOG.debug("Loading Taas OVN Driver.")
@@ -173,3 +176,28 @@ class TaasOvnDriver(service_drivers.TaasBaseDriver):
     @log_helpers.log_method_call
     def delete_tap_mirror_postcommit(self, context):
         pass
+
+    @log_helpers.log_method_call
+    def create_tap_mirror_rule_postcommit(self, context):
+        rule = context.rule
+        ovn_match = match.rule_to_ovn_match(rule)
+        for _direction, name in self._lport_mirrors(context.tap_mirror,
+                                                    rule.get('direction')):
+            request = {'type': 'mirror_rule_add',
+                       'info': {'name': name,
+                                'priority': rule['priority'],
+                                'match': ovn_match,
+                                'action': rule['action']}}
+            self._ovn_helper.add_request(request)
+
+    @log_helpers.log_method_call
+    def delete_tap_mirror_rule_precommit(self, context):
+        rule = context.rule
+        ovn_match = match.rule_to_ovn_match(rule)
+        for _direction, name in self._lport_mirrors(context.tap_mirror,
+                                                    rule.get('direction')):
+            request = {'type': 'mirror_rule_del',
+                       'info': {'name': name,
+                                'priority': rule['priority'],
+                                'match': ovn_match}}
+            self._ovn_helper.add_request(request)

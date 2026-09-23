@@ -40,6 +40,29 @@ class TestOvnNbIdlForTaas(base.BaseTestCase):
                 location=schema_files['OVN_Northbound'])).start()
         self.idl_taas = impl_idl_taas.OvnNbIdlForTaas()
 
+    def test_tables_registered_only_when_present(self):
+        # The fixture schema (7.1.0) predates the Mirror_Rule table: only
+        # the tables it provides must be registered in the IDL.
+        with mock.patch.object(ovs_idl.SchemaHelper, 'register_table',
+                               autospec=True) as mock_register:
+            impl_idl_taas.OvnNbIdlForTaas()
+        registered = [c[0][1] for c in mock_register.call_args_list]
+        self.assertEqual(['Logical_Switch_Port', 'Mirror'], registered)
+        self.assertNotIn('Mirror_Rule', registered)
+
+    def test_mirror_rule_table_registered_when_present(self):
+        real_helper = ovs_idl.SchemaHelper(
+            location=schema_files['OVN_Northbound'])
+        real_helper.schema_json['tables']['Mirror_Rule'] = {
+            'columns': {'match': {'type': 'string'}}}
+        self.mock_gsh.side_effect = lambda x, y: real_helper
+        with mock.patch.object(ovs_idl.SchemaHelper, 'register_table',
+                               autospec=True) as mock_register:
+            impl_idl_taas.OvnNbIdlForTaas()
+        registered = [c[0][1] for c in mock_register.call_args_list]
+        self.assertEqual(['Logical_Switch_Port', 'Mirror', 'Mirror_Rule'],
+                         registered)
+
     def test__get_ovsdb_helper(self):
         self.mock_gsh.reset_mock()
         self.idl_taas._get_ovsdb_helper('foo')

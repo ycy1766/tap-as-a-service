@@ -67,6 +67,20 @@ class TestTapMirrorPlugin(testlib_api.SqlTestCase):
             'remote_port_id': self._remote_port_id,
             'directions': {'BOTH': None},
         }
+        self._rule = {
+            'project_id': self._project_id,
+            'priority': 100,
+            'action': 'mirror',
+            'direction': None,
+            'ethertype': 'IPv4',
+            'protocol': 'tcp',
+            'source_ip_prefix': None,
+            'destination_ip_prefix': None,
+            'source_port_range_min': None,
+            'source_port_range_max': None,
+            'destination_port_range_min': 443,
+            'destination_port_range_max': 443,
+        }
 
     @contextlib.contextmanager
     def tap_mirror(self, **kwargs):
@@ -255,3 +269,63 @@ class TestTapMirrorPlugin(testlib_api.SqlTestCase):
             self.assertRaises(taas_exc.TapMirrorNotFound,
                               self._plugin.get_tap_mirror,
                               self._context, tm['id'])
+
+    # rules
+
+    def _create_rule(self, tap_mirror_id, **kwargs):
+        rule = dict(self._rule, **kwargs)
+        return self._plugin.create_tap_mirror_rule(
+            self._context, tap_mirror_id, {'rule': rule})
+
+    def test_create_tap_mirror_rule(self):
+        with self.tap_mirror(**self._lport_kwargs) as tm:
+            rule = self._create_rule(tm['id'])
+            self.assertEqual(100, rule['priority'])
+            self.assertEqual(tm['id'], rule['tap_mirror_id'])
+            self.driver.create_tap_mirror_rule_postcommit.\
+                assert_called_once()
+            ctx = self.driver.create_tap_mirror_rule_postcommit.call_args[0][0]
+            self.assertEqual(rule['id'], ctx.rule['id'])
+            self.assertEqual(tm['id'], ctx.tap_mirror['id'])
+            rules = self._plugin.get_tap_mirror_rules(self._context, tm['id'])
+            self.assertEqual([rule['id']], [r['id'] for r in rules])
+
+    def test_create_tap_mirror_rule_on_gre_mirror(self):
+        with self.tap_mirror() as tm:
+            self.assertRaises(taas_exc.TapMirrorRulesNotSupported,
+                              self._create_rule, tm['id'])
+
+    def test_create_tap_mirror_rule_duplicate(self):
+        with self.tap_mirror(**self._lport_kwargs) as tm:
+            self._create_rule(tm['id'])
+            self.assertRaises(taas_exc.TapMirrorRuleConflict,
+                              self._create_rule, tm['id'])
+            # Same priority with a different match is fine.
+            self._create_rule(tm['id'], destination_port_range_min=80,
+                              destination_port_range_max=80)
+
+    def test_create_tap_mirror_rule_direction(self):
+        with self.tap_mirror(**dict(self._lport_kwargs,
+                                    directions={'IN': None})) as tm:
+            self.assertRaises(taas_exc.TapMirrorRuleDirectionNotMirrored,
+                              self._create_rule, tm['id'], direction='OUT')
+            rule = self._create_rule(tm['id'], direction='IN')
+            self.assertEqual('IN', rule['direction'])
+            # Same priority and match in the other direction or without
+            # direction is a different rule.
+            self._create_rule(tm['id'])
+
+    def test_create_tap_mirror_rule_invalid_ports(self):
+        with self.tap_mirror(**self._lport_kwargs) as tm:
+            self.assertRaises(taas_exc.TapMirrorRuleInvalidPortRange,
+                              self._create_rule, tm['id'], protocol='icmp')
+
+    def test_delete_tap_mirror_rule(self):
+        with self.tap_mirror(**self._lport_kwargs) as tm:
+            rule = self._create_rule(tm['id'])
+            self._plugin.delete_tap_mirror_rule(self._context, rule['id'],
+                                                tm['id'])
+            self.driver.delete_tap_mirror_rule_precommit.assert_called_once()
+            self.assertRaises(taas_exc.TapMirrorRuleNotFound,
+                              self._plugin.get_tap_mirror_rule,
+                              self._context, rule['id'], tm['id'])

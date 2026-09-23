@@ -1,0 +1,19 @@
+---
+features:
+  - |
+    Add the ``rules`` sub-resource of ``tap_mirrors`` (API extension
+    ``tap-mirror-rules``, ``/taas/tap_mirrors/{id}/rules``) to select the
+    traffic mirrored by an ``lport`` mirror. A rule has a ``priority``
+    (1-32767), an ``action`` (``mirror`` or ``skip``), an optional
+    ``direction`` (``IN`` or ``OUT``, both when unset) and a match described
+    with ``ethertype``, ``protocol``, source and destination IP prefixes and
+    port ranges, like a security group rule. A packet matching no rule is
+    mirrored, so without rules the whole traffic of the port is mirrored.
+  - |
+    The OVN service driver implements the rules with the OVN ``Mirror_Rule``
+    table available since OVN 25.09, attaching each rule to the OVN mirror of
+    its direction.
+upgrade:
+  - |
+    A database expand migration creates the ``tap_mirror_rules`` table. Run
+    ``neutron-db-manage --subproject tap-as-a-service upgrade --expand``.

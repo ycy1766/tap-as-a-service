@@ -267,3 +267,52 @@ The OVN driver requires the ``lport`` value of ``Mirror.type`` in the
 connected Northbound schema: on an older OVN the creation of an ``lport``
 mirror fails with an explicit error and ``gre``/``erspanv1`` mirrors keep
 working.
+
+Tap mirror rules
+----------------
+
+The ``tap-mirror-rules`` extension attaches ``Mirror_Rule`` rows to the OVN
+mirrors of an ``lport`` tap mirror. The Tap Mirror rules are translated by
+the driver into OVN match expressions, the users never see the OVN syntax. A
+rule with a ``direction`` is attached to a single OVN mirror, a rule without
+direction to both:
+
+.. code-block:: bash
+
+ $ openstack tap mirror rule create mirror1 --priority 100 --action mirror --protocol tcp --dst-port 443
+ $ openstack tap mirror rule create mirror1 --priority 50 --action mirror --direction IN --protocol icmp
+ $ openstack tap mirror rule create mirror1 --priority 1 --action skip
+
+ $ ovn-nbctl mirror-list
+ tm_in_717132:
+  Type     :  lport
+  Sink     :  <UUID of monitor_port>
+  Filter   :  to-lport
+  Index/Key:  0
+  Rules    :
+    100 ip4 && tcp && tcp.dst == 443 mirror
+     50 ip4 && icmp4 mirror
+      1 1 skip
+ tm_out_717132:
+  Type     :  lport
+  Sink     :  <UUID of monitor_port>
+  Filter   :  from-lport
+  Index/Key:  0
+  Rules    :
+    100 ip4 && tcp && tcp.dst == 443 mirror
+      1 1 skip
+
+ $ ovn-sbctl lflow-list <logical switch of mirror_port> | grep ls_in_mirror
+  table=2 (ls_in_mirror ), priority=200, match=(inport == "<mirror_port>" && (ip4 && tcp && tcp.dst == 443)), action=(mirror("mp-...-<monitor_port>"); next;)
+  table=2 (ls_in_mirror ), priority=101, match=(inport == "<mirror_port>" && (1)), action=(next;)
+  table=2 (ls_in_mirror ), priority=100, match=(inport == "<mirror_port>"), action=(mirror("mp-...-<monitor_port>"); next;)
+
+``ovn-northd`` keeps the priority 100 "mirror everything" flow of the mirror
+and puts the rules above it at ``100 + priority``; this is why the API
+priorities start at 1 and why a packet matching no rule is mirrored. A low
+priority catch-all ``skip`` rule turns the mirror into "mirror only what the
+rules select".
+
+The OVN driver registers the ``Mirror_Rule`` table only when the connected
+Northbound schema has it, so the rules API fails with an explicit error on an
+older OVN while the mirrors themselves keep working.

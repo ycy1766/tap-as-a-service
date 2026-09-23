@@ -21,12 +21,17 @@ from neutron_taas.services.taas.service_drivers.ovn import taas_ovn
 
 
 class FakeMirrorContext():
-    def __init__(self, tap_mirror):
+    def __init__(self, tap_mirror, rule=None):
         self._tap_mirror = tap_mirror
+        self._rule = rule
 
     @property
     def tap_mirror(self):
         return self._tap_mirror
+
+    @property
+    def rule(self):
+        return self._rule
 
 
 class TestTaasOvnDriver(base.BaseTestCase):
@@ -70,6 +75,19 @@ class TestTaasOvnDriver(base.BaseTestCase):
             'remote_ip': None,
             'remote_port_id': uuidutils.generate_uuid(),
             'port_id': uuidutils.generate_uuid()
+        }
+        self.lport_rule = {
+            'id': uuidutils.generate_uuid(),
+            'priority': 100,
+            'action': 'mirror',
+            'ethertype': 'IPv4',
+            'protocol': 'tcp',
+            'source_ip_prefix': None,
+            'destination_ip_prefix': None,
+            'source_port_range_min': None,
+            'source_port_range_max': None,
+            'destination_port_range_min': 443,
+            'destination_port_range_max': 443,
         }
 
     def test_create_tap_mirror_postcommit(self):
@@ -211,3 +229,42 @@ class TestTaasOvnDriver(base.BaseTestCase):
                     'port_id': self.lport_t_mirror['port_id']}}))
         self.mock_add_request.assert_has_calls(expected)
         self.assertEqual(2, self.mock_add_request.call_count)
+
+    def test_create_tap_mirror_rule_postcommit(self):
+        ctx = FakeMirrorContext(self.lport_t_mirror, self.lport_rule)
+        self.driver.create_tap_mirror_rule_postcommit(ctx)
+        expected = []
+        for name in self._lport_names():
+            expected.append(mock.call({
+                'type': 'mirror_rule_add',
+                'info': {
+                    'name': name,
+                    'priority': 100,
+                    'match': 'ip4 && tcp && tcp.dst == 443',
+                    'action': 'mirror'}}))
+        # A rule without direction goes to every mirror of the Tap Mirror.
+        self.mock_add_request.assert_has_calls(expected)
+        self.assertEqual(2, self.mock_add_request.call_count)
+
+    def test_create_tap_mirror_rule_postcommit_with_direction(self):
+        rule = dict(self.lport_rule, direction='IN')
+        ctx = FakeMirrorContext(self.lport_t_mirror, rule)
+        self.driver.create_tap_mirror_rule_postcommit(ctx)
+        name_in, _name_out = self._lport_names()
+        self.mock_add_request.assert_called_once()
+        self.assertEqual(name_in,
+                         self.mock_add_request.call_args[0][0]['info']['name'])
+
+    def test_delete_tap_mirror_rule_precommit(self):
+        rule = dict(self.lport_rule, direction='OUT')
+        ctx = FakeMirrorContext(self.lport_t_mirror, rule)
+        self.driver.delete_tap_mirror_rule_precommit(ctx)
+        _name_in, name_out = self._lport_names()
+        expected_dict = {
+            'type': 'mirror_rule_del',
+            'info': {
+                'name': name_out,
+                'priority': 100,
+                'match': 'ip4 && tcp && tcp.dst == 443'}
+        }
+        self.mock_add_request.assert_called_once_with(expected_dict)
