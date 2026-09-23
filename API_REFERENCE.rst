@@ -85,7 +85,8 @@ Tap Mirror
 ----------
 
 A ``tapmirror`` mirrors the traffic of a Neutron port using ``gre`` or
-``erspan v1`` tunnels.
+``erspan v1`` tunnels to a remote IP address, or, with the ``lport`` mirror
+type, to another Neutron port inside the overlay (``remote_port_id``).
 
 .. code-block:: python
 
@@ -133,6 +134,42 @@ A ``tapmirror`` mirrors the traffic of a Neutron port using ``gre`` or
         }
     }
 
+The ``tap-mirror-lport`` extension adds the ``lport`` value to
+``mirror_type``, makes ``remote_ip`` optional and adds ``remote_port_id``:
+
+.. code-block:: python
+
+    'tap_mirrors': {
+        'mirror_type': {
+            'allow_post': True, 'allow_put': False,
+            'validate': {'type:values': ['erspanv1', 'gre', 'lport']},
+            'is_visible': True},
+        'remote_ip': {
+            'allow_post': True, 'allow_put': False,
+            'validate': {'type:ip_address_or_none': None},
+            'default': None, 'is_visible': True},
+        'remote_port_id': {
+            'allow_post': True, 'allow_put': False,
+            'validate': {'type:uuid_or_none': None},
+            'default': None, 'enforce_policy': True, 'is_visible': True},
+    }
+
+For an ``lport`` mirror ``remote_port_id`` is mandatory and ``remote_ip`` must
+be unset; the remote port must be bound to a host, must differ from
+``port_id`` and must belong to the same project unless the caller is an
+administrator. The tunnel ID values of ``directions`` are optional and
+ignored for this type, only the keys (``IN``, ``OUT``, ``BOTH``) select the
+mirrored directions. A port can have at most one ``lport`` mirror per
+direction (the backend installs one unconditional mirroring flow per mirror
+and direction, two would collide); several ports may mirror to the same
+remote port. Deleting either the mirrored port or the remote port deletes the
+mirror.
+
+The mirrored traffic is taken from the logical switch pipeline of the source
+port: frames sent by the port are copied before the security group rules are
+applied, frames delivered to the port are copied after them, i.e. only the
+traffic the port actually receives. The copies bypass the security groups of
+the remote port.
 
 API REFERENCE
 =============
@@ -173,6 +210,8 @@ Openstack CLI for tap mirrors
 -----------------------------
 
 * Create tap mirror: **openstack tap mirror create** --name <name of the tap mirror> --description <description for the tap mirror> --port <the name or UUID of the port to associate with the tap mirror> --directions <direction dict keys are IN and OUT, the value is the tunnel ID, i.e.: IN=102, can be repeated> --remote-ip <the destination of the mirroring> --mirror-type <can be gre or erspanv1>
+
+* Create an lport tap mirror: **openstack tap mirror create** --name <name of the tap mirror> --port <the name or UUID of the port to mirror> --directions BOTH --remote-port <the name or UUID of the port receiving the mirrored traffic> --mirror-type lport
 
 * List tap mirrors: **openstack tap mirror list**
 

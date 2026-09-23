@@ -47,8 +47,10 @@ class TapMirror(model_base.BASEV2, model_base.HasId,
                         nullable=False)
     directions = sa.Column(sa.String(255), nullable=False)
     remote_ip = sa.Column(sa.String(db_const.IP_ADDR_FIELD_SIZE),
-                          nullable=False)
-    mirror_type = sa.Column(sa.Enum('erspanv1', 'gre',
+                          nullable=True)
+    remote_port_id = sa.Column(sa.String(db_const.UUID_FIELD_SIZE),
+                               nullable=True)
+    mirror_type = sa.Column(sa.Enum('erspanv1', 'gre', 'lport',
                                     name='tapmirrors_type'),
                             nullable=False)
     api_collections = [mirror_extension.COLLECTION_NAME]
@@ -67,6 +69,7 @@ class Taas_mirror_db_mixin(tap_m_extension.TapMirrorBase):
             'port_id': tap_mirror.get('port_id'),
             'directions': jsonutils.loads(tap_mirror.get('directions')),
             'remote_ip': tap_mirror.get('remote_ip'),
+            'remote_port_id': tap_mirror.get('remote_port_id'),
             'mirror_type': tap_mirror.get('mirror_type'),
         }
         return db_utils.resource_fields(res, fields)
@@ -91,6 +94,7 @@ class Taas_mirror_db_mixin(tap_m_extension.TapMirrorBase):
                 port_id=fields.get('port_id'),
                 directions=jsonutils.dumps(fields.get('directions')),
                 remote_ip=fields.get('remote_ip'),
+                remote_port_id=fields.get('remote_port_id'),
                 mirror_type=fields.get('mirror_type'),
             )
             # TODO(lajoskatona): Check tunnel_id...

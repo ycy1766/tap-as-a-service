@@ -47,3 +47,15 @@ def get_ranges_str_from_list(ranges):
     return ",".join([str(range_item[0]) if len(range_item) == 1
                      else str(range_item[0]) + "-" + str(range_item[-1])
                      for range_item in ranges_str])
+
+
+def expand_directions(directions):
+    """Expand the ``directions`` keys of a Tap Mirror into IN and OUT.
+
+    ``{"BOTH": ...}`` means both directions; the tunnel ID values are not
+    looked at. The result is ordered IN, OUT.
+    """
+    keys = set(directions or {})
+    if 'BOTH' in keys:
+        return ['IN', 'OUT']
+    return [d for d in ('IN', 'OUT') if d in keys]

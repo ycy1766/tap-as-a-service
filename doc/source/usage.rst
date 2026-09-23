@@ -106,3 +106,35 @@ Worklow for tap mirrors
 .. code-block:: console
 
  $ openstack tap mirror create --port mirror_port --name mirror1 --directions IN=102 --remte-ip 100.109.0.221 --mirror-type erspanv1
+
+Workflow for lport tap mirrors (OVN)
+------------------------------------
+
+With the OVN driver and OVN 25.09 or newer, the destination of a mirror can be
+another Neutron port instead of a remote IP. The mirrored frames are delivered
+to that port inside the overlay, without any tunnel encapsulation, so the
+receiving instance sees the original frames exactly as a SPAN port would.
+
+1. Boot the monitoring VM in the same project (or, as an administrator, in any
+   project) and note its port. The port must be bound, i.e. the VM must be
+   running. Tools such as tcpdump or an IDS must put the interface in
+   promiscuous mode because the mirrored frames carry the MAC addresses of the
+   mirrored traffic, not the one of the monitoring port.
+
+.. code-block:: console
+
+ $ openstack port create monitor_port --network monitor_net
+ $ openstack server create --flavor d1 --image <ubuntu or similar> --nic port-id=monitor_port monitor_vm
+
+2. Create the mirror from the source port to the monitoring port. Tunnel IDs
+   are not needed, only the direction keys matter.
+
+.. code-block:: console
+
+ $ openstack tap mirror create --port mirror_port --name mirror1 --directions BOTH --remote-port monitor_port --mirror-type lport
+
+3. Observe the traffic on the monitoring VM:
+
+.. code-block:: console
+
+ $ sudo tcpdump -nn -e -i eth0 not host <monitor_vm IP>

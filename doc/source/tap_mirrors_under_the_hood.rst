@@ -219,3 +219,51 @@ Please note the ERSPAN header fields also:
  Internet Control Message Protocol
 
 ``SpanID`` is ``102`` as expected but the ``Index`` is ``258`` which is ``0x102``
+
+lport mirrors
+-------------
+
+OVN 25.09 added the ``lport`` mirror type: the sink of the mirror is a
+logical switch port instead of a remote IP, and the copies are forwarded
+through the OVN logical pipeline (``ls_in_mirror`` and ``ls_out_mirror``
+stages) to the chassis of the sink port. No GRE or ERSPAN port is created on
+``br-int``; the copies travel over the existing tunnels of the overlay and
+reach the sink port as plain frames.
+
+Like for ``gre``/``erspanv1`` mirrors, the driver creates one OVN ``Mirror``
+per mirrored direction (``tm_in_<id>`` with filter ``to-lport`` for ``IN``,
+``tm_out_<id>`` with ``from-lport`` for ``OUT``; ``BOTH`` creates both):
+
+.. code-block:: bash
+
+ $ openstack tap mirror create --port mirror_port --name mirror1 --directions BOTH --remote-port monitor_port --mirror-type lport
+
+ $ ovn-nbctl mirror-list
+ tm_in_717132:
+  Type     :  lport
+  Sink     :  <UUID of monitor_port>
+  Filter   :  to-lport
+  Index/Key:  0
+ tm_out_717132:
+  Type     :  lport
+  Sink     :  <UUID of monitor_port>
+  Filter   :  from-lport
+  Index/Key:  0
+
+ $ ovn-sbctl lflow-list <logical switch of mirror_port> | grep mirror
+  table=2 (ls_in_mirror ), priority=100, match=(inport == "<mirror_port>"), action=(mirror("mp-...-<monitor_port>"); next;)
+  table=9 (ls_out_mirror ), priority=100, match=(outport == "<mirror_port>"), action=(mirror("mp-...-<monitor_port>"); next;)
+
+``ovn-northd`` installs one unconditional "mirror everything" flow per mirror
+and direction on the source port; this is why a source port accepts a single
+``lport`` mirror per direction: two of them would install the same flow with
+different sinks. ``ls_in_mirror`` (table 2) runs before the ACL stages and
+``ls_out_mirror`` (table 9) after them, so traffic sent by the port is
+mirrored before its security groups and traffic delivered to it after them.
+A high priority ``ls_out_pre_acl`` flow makes the copies bypass the ACLs of
+the sink port.
+
+The OVN driver requires the ``lport`` value of ``Mirror.type`` in the
+connected Northbound schema: on an older OVN the creation of an ``lport``
+mirror fails with an explicit error and ``gre``/``erspanv1`` mirrors keep
+working.

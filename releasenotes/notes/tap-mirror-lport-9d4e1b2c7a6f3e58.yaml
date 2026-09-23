@@ -1,0 +1,25 @@
+---
+features:
+  - |
+    Add the ``lport`` mirror type to ``tap_mirrors`` (API extension
+    ``tap-mirror-lport``). The sink of an ``lport`` mirror is another Neutron
+    port given in the new ``remote_port_id`` attribute instead of a remote IP
+    address: the mirrored frames are delivered to that port inside the
+    overlay, without GRE/ERSPAN encapsulation and without exposing the
+    hypervisor addresses to the receiving instance. ``remote_ip`` is optional
+    for this type and so are the tunnel ID values of ``directions``. The
+    remote port must exist, be bound to a host and belong to the same project
+    unless the request is made by an administrator; a port accepts one
+    ``lport`` mirror per direction and the mirror is deleted together with
+    either of its ports.
+  - |
+    The OVN service driver implements ``lport`` mirrors with the OVN
+    ``Mirror`` type ``lport`` available since OVN 25.09, creating one mirror
+    per direction. Against an older OVN Northbound schema the creation of an
+    ``lport`` mirror fails with an explicit error while ``gre`` and
+    ``erspanv1`` mirrors keep working.
+upgrade:
+  - |
+    A database expand migration adds the ``remote_port_id`` column and the
+    ``lport`` value of ``mirror_type`` to ``tap_mirrors``. Run
+    ``neutron-db-manage --subproject tap-as-a-service upgrade --expand``.
