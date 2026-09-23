@@ -26,8 +26,10 @@ from oslo_log import log as logging
 from oslo_utils import excutils
 
 from neutron_taas.common import constants as taas_consts
+from neutron_taas.common import utils as taas_utils
 from neutron_taas.db import tap_mirror_db
 from neutron_taas.extensions import tap_mirror_both_direction as t_m_b_api_def
+from neutron_taas.extensions import tap_mirror_lport as t_m_l_api_def
 from neutron_taas.services.taas.service_drivers import (service_driver_context
                                                         as sd_context)
 
@@ -39,6 +41,7 @@ class TapMirrorPlugin(tap_mirror_db.Taas_mirror_db_mixin):
 
     supported_extension_aliases = [t_m_api_def.ALIAS,
                                    t_m_b_api_def.ALIAS,
+                                   t_m_l_api_def.ALIAS,
                                    ]
 
     path_prefix = "/taas"
@@ -76,6 +79,8 @@ class TapMirrorPlugin(tap_mirror_db.Taas_mirror_db_mixin):
         port_id = t_m['port_id']
         project_id = t_m['project_id']
 
+        is_lport = t_m['mirror_type'] == t_m_l_api_def.MIRROR_TYPE_LPORT
+
         with db_api.CONTEXT_READER.using(context):
             # Get port details
             port = self.get_port_details(context, port_id)
@@ -90,8 +95,15 @@ class TapMirrorPlugin(tap_mirror_db.Taas_mirror_db_mixin):
                 # Fail here? Is it a valid usecase to create a mirror for a
                 # port that is not bound?
 
+            if is_lport:
+                self._validate_lport_mirror(context, t_m)
+            else:
+                self._validate_tunnel_mirror(t_m)
+
         with db_api.CONTEXT_WRITER.using(context):
-            self._validate_tap_tunnel_id(context, t_m['directions'])
+            if not is_lport:
+                # Tunnel IDs are only meaningful for gre/erspan mirrors.
+                self._validate_tap_tunnel_id(context, t_m['directions'])
             tm = super().create_tap_mirror(context, tap_mirror)
             # Precommit phase, is it necessary? tunnel id check should be in
             # it....
@@ -104,6 +116,68 @@ class TapMirrorPlugin(tap_mirror_db.Taas_mirror_db_mixin):
             except Exception:
                 pass
         return tm
+
+    def _validate_tunnel_mirror(self, t_m):
+        """Validate a gre/erspan mirror: it needs a sink IP, no sink port."""
+        if not t_m.get('remote_ip'):
+            raise t_m_l_api_def.TapMirrorRemoteIpRequired(
+                mirror_type=t_m['mirror_type'])
+        if t_m.get(t_m_l_api_def.REMOTE_PORT_ID):
+            raise t_m_l_api_def.TapMirrorRemotePortNotAllowed(
+                mirror_type=t_m['mirror_type'])
+        # The tunnel ID values are optional in the API since lport mirrors
+        # do not use them, but a tunnel mirror needs one per direction.
+        for direction, tunnel_id in t_m['directions'].items():
+            if tunnel_id is None:
+                raise t_m_l_api_def.TapMirrorTunnelIdRequired(
+                    mirror_type=t_m['mirror_type'], direction=direction)
+
+    def _validate_lport_mirror(self, context, t_m):
+        """Validate an ``lport`` mirror.
+
+        The sink is another Neutron port: it must exist, must be different
+        from the mirrored port, must be bound to a host (otherwise OVN has no
+        chassis to deliver the mirrored traffic to) and must belong to the
+        same project unless the request is made by an admin. A remote IP
+        or a tunnel ID is rejected instead of being silently ignored.
+        """
+        if t_m.get('remote_ip'):
+            raise t_m_l_api_def.TapMirrorRemoteIpNotAllowed(
+                mirror_type=t_m['mirror_type'])
+        for direction, tunnel_id in t_m['directions'].items():
+            if tunnel_id is not None:
+                raise t_m_l_api_def.TapMirrorTunnelIdNotAllowed(
+                    mirror_type=t_m['mirror_type'], direction=direction)
+        remote_port_id = t_m.get(t_m_l_api_def.REMOTE_PORT_ID)
+        if not remote_port_id:
+            raise t_m_l_api_def.TapMirrorRemotePortRequired(
+                mirror_type=t_m['mirror_type'])
+        if remote_port_id == t_m['port_id']:
+            raise t_m_l_api_def.TapMirrorSameSourceAndRemotePort()
+        try:
+            remote_port = self.get_port_details(context, remote_port_id)
+        except n_exc.PortNotFound:
+            raise taas_exc.InvalidDestinationPort(port=remote_port_id)
+        if (remote_port['tenant_id'] != t_m['project_id'] and
+                not context.is_admin):
+            raise taas_exc.PortDoesNotBelongToProject()
+        if not remote_port.get(portbindings.HOST_ID):
+            raise t_m_l_api_def.TapMirrorRemotePortNotBound(
+                port_id=remote_port_id)
+        # OVN installs one unconditional "mirror everything" flow per lport
+        # mirror and direction on the source port; two lport mirrors on the
+        # same port and direction would collide, so only one is allowed.
+        wanted = set(taas_utils.expand_directions(t_m['directions']))
+        existing = self.get_tap_mirrors(
+            context,
+            filters={'port_id': [t_m['port_id']],
+                     'mirror_type': [t_m_l_api_def.MIRROR_TYPE_LPORT]})
+        for mirror in existing:
+            overlap = wanted & set(
+                taas_utils.expand_directions(mirror['directions']))
+            if overlap:
+                raise t_m_l_api_def.TapMirrorLportPortInUse(
+                    port_id=t_m['port_id'], direction=sorted(overlap)[0])
 
     def _validate_tap_tunnel_id(self, context, mirror_directions):
         mirrors = self.get_tap_mirrors(context)
@@ -151,6 +225,11 @@ class TapMirrorPlugin(tap_mirror_db.Taas_mirror_db_mixin):
         tap_mirrors = self.get_tap_mirrors(
             context,
             filters={'port_id': [deleted_port_id]}, fields=['id'])
+        # An ``lport`` mirror has no meaning once its sink port is gone.
+        tap_mirrors += self.get_tap_mirrors(
+            context,
+            filters={t_m_l_api_def.REMOTE_PORT_ID: [deleted_port_id]},
+            fields=['id'])
 
         for t_m in tap_mirrors:
             try:

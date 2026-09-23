@@ -38,7 +38,7 @@ class TapMirrorDbTestCase(testlib_api.SqlTestCase):
 
     def _get_tap_mirror_data(self, name='tm-1', port_id=None,
                              directions='{"IN": "99"}', remote_ip='10.99.8.3',
-                             mirror_type='erspanv1'):
+                             mirror_type='erspanv1', remote_port_id=None):
         port_id = port_id or _uuid()
         return {"tap_mirror": {"name": name,
                                "project_id": self.project_id,
@@ -46,6 +46,7 @@ class TapMirrorDbTestCase(testlib_api.SqlTestCase):
                                "port_id": port_id,
                                'directions': directions,
                                'remote_ip': remote_ip,
+                               'remote_port_id': remote_port_id,
                                'mirror_type': mirror_type
                                }
                 }
@@ -117,3 +118,16 @@ class TapMirrorDbTestCase(testlib_api.SqlTestCase):
         self._delete_tap_mirror(result['id'])
         self.assertRaises(taas_exc.TapMirrorNotFound,
                           self._get_tap_mirror, result['id'])
+
+    def test_lport_tap_mirror_create(self):
+        remote_port_id = _uuid()
+        data = self._get_tap_mirror_data(mirror_type='lport', remote_ip=None,
+                                         directions={'BOTH': None},
+                                         remote_port_id=remote_port_id)
+        result = self._create_tap_mirror(data)
+        self.assertEqual('lport', result['mirror_type'])
+        self.assertEqual(remote_port_id, result['remote_port_id'])
+        self.assertIsNone(result['remote_ip'])
+        self.assertEqual({'BOTH': None}, result['directions'])
+        listed = self._get_tap_mirrors()
+        self.assertEqual(remote_port_id, listed[0]['remote_port_id'])
