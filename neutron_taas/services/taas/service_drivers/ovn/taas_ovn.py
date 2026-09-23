@@ -17,8 +17,11 @@ from oslo_log import log as logging
 
 from neutron_taas.common import utils as taas_utils
 from neutron_taas.extensions import tap_mirror_lport as tap_m_l_api_def
+from neutron_taas.extensions import tap_mirror_rules as tap_m_r_api_def
 from neutron_taas.services.taas import service_drivers
 from neutron_taas.services.taas.service_drivers.ovn import helper
+from neutron_taas.services.taas.service_drivers.ovn import match
+from neutron_taas.services.taas.service_drivers.ovn.ovsdb import impl_idl_taas
 
 
 LOG = logging.getLogger(__name__)
@@ -29,12 +32,36 @@ class TaasOvnDriver(service_drivers.TaasBaseDriver):
 
     driver_name = "TaaS OVN Driver"
     more_supported_extension_aliases = [tap_m_api_def.ALIAS,
-                                        tap_m_l_api_def.ALIAS]
+                                        tap_m_l_api_def.ALIAS,
+                                        tap_m_r_api_def.ALIAS]
 
     def __init__(self, service_plugin):
         LOG.debug("Loading Taas OVN Driver.")
         super().__init__(service_plugin)
         self._ovn_helper = helper.TaasOvnProviderHelper()
+        self._supports_rules = None
+
+    def supports_tap_mirror_rules(self):
+        """Advertise ``tap-mirror-rules`` only with an OVN >= 25.09 schema.
+
+        The Northbound schema is looked up once. If it can not be fetched
+        the extension is advertised anyway and the rule commands report the
+        missing ``Mirror_Rule`` table at runtime.
+        """
+        if self._supports_rules is None:
+            try:
+                self._supports_rules = impl_idl_taas.nb_schema_has_table(
+                    'Mirror_Rule')
+            except Exception:
+                LOG.warning("Could not check the OVN Northbound schema for "
+                            "the Mirror_Rule table; advertising the "
+                            "tap-mirror-rules extension anyway")
+                self._supports_rules = True
+            if not self._supports_rules:
+                LOG.info("The OVN Northbound schema has no Mirror_Rule "
+                         "table (OVN < 25.09); the tap-mirror-rules "
+                         "extension is not advertised")
+        return self._supports_rules
 
     def __del__(self):
         self._ovn_helper.shutdown()
@@ -173,3 +200,28 @@ class TaasOvnDriver(service_drivers.TaasBaseDriver):
     @log_helpers.log_method_call
     def delete_tap_mirror_postcommit(self, context):
         pass
+
+    @log_helpers.log_method_call
+    def create_tap_mirror_rule_postcommit(self, context):
+        rule = context.rule
+        ovn_match = match.rule_to_ovn_match(rule)
+        for _direction, name in self._lport_mirrors(context.tap_mirror,
+                                                    rule.get('direction')):
+            request = {'type': 'mirror_rule_add',
+                       'info': {'name': name,
+                                'priority': rule['priority'],
+                                'match': ovn_match,
+                                'action': rule['action']}}
+            self._ovn_helper.add_request(request)
+
+    @log_helpers.log_method_call
+    def delete_tap_mirror_rule_precommit(self, context):
+        rule = context.rule
+        ovn_match = match.rule_to_ovn_match(rule)
+        for _direction, name in self._lport_mirrors(context.tap_mirror,
+                                                    rule.get('direction')):
+            request = {'type': 'mirror_rule_del',
+                       'info': {'name': name,
+                                'priority': rule['priority'],
+                                'match': ovn_match}}
+            self._ovn_helper.add_request(request)

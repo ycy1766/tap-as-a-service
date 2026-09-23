@@ -183,6 +183,85 @@ applied, frames delivered to the port are copied after them, i.e. only the
 traffic the port actually receives. The copies bypass the security groups of
 the remote port.
 
+Tap as a Service Tap Mirror rules
+---------------------------------
+
+With the ``tap-mirror-rules`` extension, ``lport`` mirrors accept filtering
+rules as the ``rules`` sub-resource (``/taas/tap_mirrors/{tap_mirror_id}/rules``). Rules are evaluated by
+decreasing ``priority`` (1-32767); the first matching rule decides whether
+the packet is mirrored (``action: mirror``) or not (``action: skip``). A
+packet matching no rule is mirrored, so a mirror without rules mirrors the
+whole traffic of the port; to mirror only selected traffic add a low priority
+catch-all ``skip`` rule. A rule applies to every direction mirrored by its
+Tap Mirror unless ``direction`` (``IN`` or ``OUT``) restricts it. The match
+is described like a security group rule:
+
+.. code-block:: python
+
+    'rules': {
+        'id': {'allow_post': False, 'allow_put': False,
+               'validate': {'type:uuid': None}, 'is_visible': True,
+               'primary_key': True},
+        'project_id': {'allow_post': True, 'allow_put': False,
+                       'validate': {'type:string': None},
+                       'required_by_policy': True, 'is_visible': True},
+        'priority': {'allow_post': True, 'allow_put': False,
+                     'validate': {'type:range': (1, 32767)},
+                     'is_visible': True},
+        'action': {'allow_post': True, 'allow_put': False,
+                   'validate': {'type:values': ['mirror', 'skip']},
+                   'default': 'mirror', 'is_visible': True},
+        'direction': {'allow_post': True, 'allow_put': False,
+                      'validate': {'type:values': ['IN', 'OUT', None]},
+                      'default': None, 'is_visible': True},
+        'ethertype': {'allow_post': True, 'allow_put': False,
+                      'validate': {'type:values': ['IPv4', 'IPv6', None]},
+                      'default': None, 'is_visible': True},
+        'protocol': {'allow_post': True, 'allow_put': False,
+                     'validate': {'type:values': ['tcp', 'udp', 'sctp',
+                                                  'icmp', 'ipv6-icmp',
+                                                  None]},
+                     'default': None, 'is_visible': True},
+        'source_ip_prefix': {'allow_post': True, 'allow_put': False,
+                             'validate': {'type:subnet_or_none': None},
+                             'default': None, 'is_visible': True},
+        'destination_ip_prefix': {'allow_post': True, 'allow_put': False,
+                                  'validate': {'type:subnet_or_none': None},
+                                  'default': None, 'is_visible': True},
+        'source_port_range_min': {'allow_post': True, 'allow_put': False,
+                                  'validate': {'type:range_or_none':
+                                               (1, 65535)},
+                                  'default': None, 'is_visible': True},
+        'source_port_range_max': {'allow_post': True, 'allow_put': False,
+                                  'validate': {'type:range_or_none':
+                                               (1, 65535)},
+                                  'default': None, 'is_visible': True},
+        'destination_port_range_min': {'allow_post': True,
+                                       'allow_put': False,
+                                       'validate': {'type:range_or_none':
+                                                    (1, 65535)},
+                                       'default': None, 'is_visible': True},
+        'destination_port_range_max': {'allow_post': True,
+                                       'allow_put': False,
+                                       'validate': {'type:range_or_none':
+                                                    (1, 65535)},
+                                       'default': None, 'is_visible': True},
+    }
+
+``ethertype`` is optional: a rule without any match attribute matches every
+frame (that is what the catch-all ``skip`` rule needs), ``protocol`` alone
+matches both IP versions, and the ethertype is otherwise derived from the IP
+prefixes or from ``icmp`` (IPv4) and ``ipv6-icmp`` (IPv6); prefixes or a
+protocol that disagree with each other or with ``ethertype`` are rejected.
+Port ranges are only accepted with the ``tcp``, ``udp`` and ``sctp``
+protocols. Two rules of the same mirror cannot share the same priority,
+direction and match.
+
+The extension is advertised only when the loaded driver can apply the rules:
+the OVN driver checks that the Northbound schema has the ``Mirror_Rule`` table
+(OVN 25.09 or later). Otherwise the ``rules`` sub-resource is absent.
+
+
 API REFERENCE
 =============
 
@@ -224,6 +303,10 @@ Openstack CLI for tap mirrors
 * Create tap mirror: **openstack tap mirror create** --name <name of the tap mirror> --description <description for the tap mirror> --port <the name or UUID of the port to associate with the tap mirror> --directions <direction dict keys are IN and OUT, the value is the tunnel ID, i.e.: IN=102, can be repeated> --remote-ip <the destination of the mirroring> --mirror-type <can be gre or erspanv1>
 
 * Create an lport tap mirror: **openstack tap mirror create** --name <name of the tap mirror> --port <the name or UUID of the port to mirror> --directions BOTH --remote-port <the name or UUID of the port receiving the mirrored traffic> --mirror-type lport
+
+* Create a tap mirror rule: **openstack tap mirror rule create** <Name or ID of the tap mirror> --priority <1-32767> --action <mirror or skip> [--direction <IN or OUT>] [--ethertype <IPv4 or IPv6>] [--protocol <tcp, udp, sctp, icmp or ipv6-icmp>] [--src-ip <CIDR>] [--dst-ip <CIDR>] [--src-port <min[:max]>] [--dst-port <min[:max]>]
+
+* List and delete tap mirror rules: **openstack tap mirror rule list** <Name or ID of the tap mirror>, **openstack tap mirror rule delete** <Name or ID of the tap mirror> <ID of the rule>
 
 * List tap mirrors: **openstack tap mirror list**
 

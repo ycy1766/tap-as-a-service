@@ -76,3 +76,14 @@ class TapMirrorContext(ServiceDriverContext):
     @property
     def tap_mirror(self):
         return self._tap_mirror
+
+
+class TapMirrorRuleContext(TapMirrorContext):
+
+    def __init__(self, service_plugin, plugin_context, tap_mirror, rule):
+        super().__init__(service_plugin, plugin_context, tap_mirror)
+        self._rule = rule
+
+    @property
+    def rule(self):
+        return self._rule

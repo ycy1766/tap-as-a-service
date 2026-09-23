@@ -104,3 +104,41 @@ class TestTaasOvnProviderHelper(base.BaseTestCase):
         self.helper.ovn_nbdb_api.mirror_get.assert_called_once_with(name)
         self.helper.ovn_nbdb_api.lsp_detach_mirror.assert_called_once()
         self.helper.ovn_nbdb_api.mirror_del.assert_called_once()
+
+    def test_mirror_add_lport(self):
+        port_id = '1234'
+        remote_port_id = '5678'
+        self.helper.mirror_add({
+            'name': 'tm_abcdef',
+            'direction_filter': 'both',
+            'dest': remote_port_id,
+            'mirror_type': 'lport',
+            'index': 0,
+            'port_id': port_id
+        })
+        self.helper.ovn_nbdb_api.lookup.assert_called_once_with(
+            'Logical_Switch_Port', port_id)
+        self.helper.ovn_nbdb_api.mirror_add.assert_called_once_with(
+            name='tm_abcdef', direction_filter='both', dest=remote_port_id,
+            mirror_type='lport', index=0)
+        self.helper.ovn_nbdb_api.lsp_attach_mirror.assert_called_once()
+
+    def test_mirror_rule_add(self):
+        mirror = self.helper.ovn_nbdb_api.mirror_get.return_value.execute(
+            check_error=True)
+        self.helper.mirror_rule_add({
+            'name': 'tm_abcdef', 'priority': 100,
+            'match': 'ip4 && tcp && tcp.dst == 443', 'action': 'mirror'})
+        self.helper.ovn_nbdb_api.mirror_get.assert_called_with('tm_abcdef')
+        self.helper.ovn_nbdb_api.mirror_rule_add.assert_called_once_with(
+            mirror.uuid, 100, 'ip4 && tcp && tcp.dst == 443', 'mirror',
+            may_exist=True)
+
+    def test_mirror_rule_del(self):
+        mirror = self.helper.ovn_nbdb_api.mirror_get.return_value.execute(
+            check_error=True)
+        self.helper.mirror_rule_del({
+            'name': 'tm_abcdef', 'priority': 0, 'match': '1'})
+        self.helper.ovn_nbdb_api.mirror_get.assert_called_with('tm_abcdef')
+        self.helper.ovn_nbdb_api.mirror_rule_del.assert_called_once_with(
+            mirror.uuid, priority=0, match='1', if_exists=True)

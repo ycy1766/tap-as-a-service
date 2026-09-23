@@ -76,3 +76,27 @@ class TapMirrorBase(service_base.ServicePluginBase, metaclass=abc.ABCMeta):
     def update_tap_mirror(self, context, id, tap_mirror):
         """Update a Tap Mirror."""
         pass
+
+    # ``rules`` sub-resource (``tap-mirror-rules`` extension)
+
+    @abc.abstractmethod
+    def create_tap_mirror_rule(self, context, tap_mirror_id, rule):
+        """Create a rule of a Tap Mirror."""
+        pass
+
+    @abc.abstractmethod
+    def get_tap_mirror_rule(self, context, id, tap_mirror_id, fields=None):
+        """Get a rule of a Tap Mirror."""
+        pass
+
+    @abc.abstractmethod
+    def get_tap_mirror_rules(self, context, tap_mirror_id, filters=None,
+                             fields=None, sorts=None, limit=None,
+                             marker=None, page_reverse=False):
+        """List the rules of a Tap Mirror."""
+        pass
+
+    @abc.abstractmethod
+    def delete_tap_mirror_rule(self, context, id, tap_mirror_id):
+        """Delete a rule of a Tap Mirror."""
+        pass
